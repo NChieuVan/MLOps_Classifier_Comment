@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ML Comment Classifier</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#101726; --muted:#9aa3b2; --fg:#e5e7eb; --accent:#4f46e5; --ok:#16a34a; --bad:#dc2626; }
+    *{ box-sizing: border-box; }
+    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; background:var(--bg); color:var(--fg); }
+    .wrap{ max-width:960px; margin:32px auto; padding:0 16px; }
+    .card{ background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0)); border:1px solid rgba(255,255,255,.08); border-radius:16px; padding:20px; }
+    h1{ margin:0 0 8px; font-size:24px; }
+    p.sub{ margin:0 0 12px; color:var(--muted); }
+    textarea{ width:100%; min-height:160px; padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:var(--panel); color:var(--fg); }
+    .row{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+    .btn{ background:var(--accent); color:white; border:none; padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600; }
+    .btn.secondary{ background:#334155; }
+    table{ width:100%; border-collapse:collapse; margin-top:18px; }
+    th,td{ padding:10px 8px; border-bottom:1px solid rgba(255,255,255,.08); text-align:left; }
+    th{ color:var(--muted); font-size:13px; }
+    .muted{ color:var(--muted); }
+    .right{ margin-left:auto; }
+    .chip{ display:inline-flex; padding:2px 8px; border-radius:9999px; border:1px solid rgba(255,255,255,.12); font-size:12px; }
+    .ok{ background:rgba(22,163,74,.15); color:#86efac; }
+    .bad{ background:rgba(220,38,38,.15); color:#fecaca; }
+    .neu{ background:rgba(99,102,241,.15); color:#c7d2fe; }
+    .bar{ background:#0f1424; border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:8px 10px; display:flex; gap:8px; align-items:center; }
+    .bar input{ flex:1; min-width:260px; border:none; outline:none; background:transparent; color:var(--fg); }
+    code { background:#0f1424; padding:2px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.1); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>ML Comment Classifier</h1>
+      <p class="sub">Mỗi dòng là một comment. Kết quả sẽ hiển thị theo bảng bên dưới.</p>
+
+      <div class="row" style="margin-top:6px">
+        <div class="bar" title="URL backend Flask của bạn (ví dụ http://localhost:5000 hoặc http://EC2:5000)">
+          <span class="muted">API:</span>
+          <input id="api" placeholder="http://localhost:5000" />
+          <button id="saveApi" class="btn secondary">Lưu</button>
+        </div>
+        <span class="muted">(đang dùng: <code id="apiShow"></code>)</span>
+      </div>
+
+      <label class="muted" style="display:block; margin-top:12px">Nhập văn bản (mỗi dòng một comment):</label>
+      <textarea id="txt" placeholder="Ví dụ:\nDịch vụ rất tốt\nKhông hài lòng"></textarea>
+
+      <div class="row">
+        <label><input type="checkbox" id="trimBlank" checked> Bỏ dòng trống</label>
+        <label><input type="checkbox" id="dedup"> Loại bỏ trùng lặp</label>
+        <span class="right muted" id="counter">0 dòng</span>
+      </div>
+
+      <div class="row">
+        <button id="btnPredict" class="btn">Predict</button>
+        <button id="btnClear" class="btn secondary">Clear</button>
+      </div>
+
+      <div id="status" class="sub" style="margin-top:10px"></div>
+
+      <table id="resultTbl" style="display:none">
+        <thead>
+          <tr><th>#</th><th>Comment</th><th>Kết quả</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <p class="sub" style="margin-top:14px">Mẹo: nhấn <code>Ctrl</code> + <code>Enter</code> để Predict nhanh.</p>
+    </div>
+  </div>
+
+  <script>
+    // ===== API BASE =====
+    // const DEFAULT_API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+    //   ? 'http://localhost:5000' : 'http://' + location.hostname + ':5000';
+    // const DEFAULT_API = '${location.protocol}//${location.host}';
+    const DEFAULT_API = location.origin;
+    localStorage.removeItem('API_BASE');  // xoá cấu hình cũ nếu từng bấm Lưu
+    const apiInput = document.getElementById('api');
+    const apiShow = document.getElementById('apiShow');
+    const btnSaveApi = document.getElementById('saveApi');
+
+    function getApiBase(){
+      return (localStorage.getItem('API_BASE') || DEFAULT_API).replace(/\/$/, '');
+    }
+    function setApiBase(v){
+      localStorage.setItem('API_BASE', v.replace(/\/$/, ''));
+      renderApi();
+    }
+    function renderApi(){
+      const v = getApiBase();
+      apiInput.value = v;
+      apiShow.textContent = v;
+    }
+    btnSaveApi.addEventListener('click', ()=> setApiBase(apiInput.value || DEFAULT_API));
+    renderApi();
+
+    // ===== UI elems =====
+    const txt = document.getElementById('txt');
+    const btnPredict = document.getElementById('btnPredict');
+    const btnClear = document.getElementById('btnClear');
+    const statusEl = document.getElementById('status');
+    const tbl = document.getElementById('resultTbl');
+    const tbody = tbl.querySelector('tbody');
+    const trimBlank = document.getElementById('trimBlank');
+    const dedup = document.getElementById('dedup');
+    const counter = document.getElementById('counter');
+
+    function parseLines(){
+      let lines = txt.value.split(/\r?\n/);
+      if (trimBlank.checked) lines = lines.map(s=>s.trim()).filter(Boolean);
+      if (dedup.checked) lines = [...new Set(lines)];
+      counter.textContent = lines.length + ' dòng';
+      return lines;
+    }
+
+    txt.addEventListener('input', parseLines);
+    trimBlank.addEventListener('change', parseLines);
+    dedup.addEventListener('change', parseLines);
+
+    function setLoading(b, msg=''){
+      btnPredict.disabled = b;
+      statusEl.textContent = msg;
+    }
+
+    function badgeFor(s){
+      const span = document.createElement('span');
+      const v = (s ?? '').toString().toLowerCase();
+      span.className = 'chip ' + (v.includes('pos')||v==='1'?'ok': v.includes('neg')||v==='0'?'bad':'neu');
+      span.textContent = s;
+      return span;
+    }
+
+    async function doPredict(){
+      const comments = parseLines();
+      if (comments.length === 0){ setLoading(false, 'Hãy nhập ít nhất 1 dòng.'); return; }
+      setLoading(true, 'Đang dự đoán...');
+      tbody.innerHTML = ''; tbl.style.display = 'none';
+      try{
+        const res = await fetch(getApiBase() + '/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ comments })
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+
+        data.forEach((row, i) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${i+1}</td><td>${row.comment}</td><td></td>`;
+          tr.children[2].appendChild(badgeFor(row.sentiment));
+          tbody.appendChild(tr);
+        });
+        tbl.style.display = '';
+        setLoading(false, `Xong: ${data.length} dòng.`);
+      }catch(err){
+        console.error(err);
+        setLoading(false, 'Lỗi: ' + err.message);
+      }
+    }
+
+    btnPredict.addEventListener('click', doPredict);
+    btnClear.addEventListener('click', ()=>{ txt.value=''; parseLines(); tbl.style.display='none'; tbody.innerHTML=''; statusEl.textContent=''; });
+    document.addEventListener('keydown', (e)=>{ if(e.ctrlKey && e.key==='Enter') doPredict(); });
+
+    // init
+    parseLines();
+  </script>
+</body>
+</html>
